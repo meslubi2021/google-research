@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2022 The Google Research Authors.
+# Copyright 2023 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -43,7 +43,8 @@ WORKDIR = epath.DEFINE_path(
     'workdir',
     None,
     'Base working directory to host all required sub-directories.',
-    required=True)
+    required=True,
+)
 CHECKPOINT_DIR = epath.DEFINE_path(
     'checkpoint_dir',
     None,
@@ -89,7 +90,8 @@ def main(_):
   # Check that checkpoint_dir exists
   if CHECKPOINT_DIR.value is not None and not CHECKPOINT_DIR.value.exists():
     raise RuntimeError(
-        f"Checkpoint directory {CHECKPOINT_DIR.value} doesn't exist")
+        f"Checkpoint directory {CHECKPOINT_DIR.value} doesn't exist"
+    )
 
 
   if train := MODULES.get(MODULE.value, None):
@@ -97,7 +99,7 @@ def main(_):
       train = functools.partial(train, checkpoint_dir=CHECKPOINT_DIR.value)
     train(workdir=WORKDIR.value, config=config)
   else:
-    raise AttributeError(f'Module {MODULE.value} doesn\'t exist.')
+    raise AttributeError(f"Module {MODULE.value} doesn't exist.")
 
 
 if __name__ == '__main__':

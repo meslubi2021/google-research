@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2022 The Google Research Authors.
+# Copyright 2023 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -38,7 +38,7 @@ def save_model_summary(model, path, file_name='model_summary.txt'):
     path: path where to store model summary
     file_name: model summary file name
   """
-  with open(os.path.join(path, file_name), 'wt') as fd:
+  with tf.io.gfile.GFile(os.path.join(path, file_name), 'w') as fd:
     stringlist = []
     model.summary(print_fn=lambda x: stringlist.append(x))  # pylint: disable=unnecessary-lambda
     model_summary = '\n'.join(stringlist)

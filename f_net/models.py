@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2022 The Google Research Authors.
+# Copyright 2023 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -266,7 +266,7 @@ class PreTrainingModel(nn.Module):
         kernel=self._get_embedding_table(), name="predictions_output")(
             masked_lm_output)
 
-    next_sentence_logits = layers.OutputProjection(
+    next_sentence_logits = layers.OutputProjection(  # pytype: disable=wrong-arg-types  # jax-types
         n_out=2, kernel_init=default_kernel_init, name="classification")(
             pooled_output)
 
@@ -397,7 +397,7 @@ class SequenceClassificationModel(nn.Module):
         self.config, name="encoder")(
             input_ids, input_mask, type_ids, deterministic=deterministic)
 
-    logits = layers.OutputProjection(
+    logits = layers.OutputProjection(  # pytype: disable=wrong-arg-types  # jax-types
         n_out=self.n_classes,
         kernel_init=default_kernel_init,
         name="classification")(

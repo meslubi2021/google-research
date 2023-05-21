@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2022 The Google Research Authors.
+# Copyright 2023 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -1608,11 +1608,11 @@ def distributed_shampoo(
 
       local_stats_flat.append(
           LocalShardedParameterStats(
-              QuantizedValue(param_pspec, [], [], jnp.float32, False,
+              QuantizedValue(param_pspec, [], [], jnp.float32, False,  # pytype: disable=wrong-arg-types  # numpy-scalars
                              list(param.shape)),
-              QuantizedValue(m1_pspec, [], m1_scale_pspec, qdtype, False,
+              QuantizedValue(m1_pspec, [], m1_scale_pspec, qdtype, False,  # pytype: disable=wrong-arg-types  # numpy-scalars
                              list(param.shape)),
-              QuantizedValue(m2_pspec, [], m2_scale_pspec, qdtype, False,
+              QuantizedValue(m2_pspec, [], m2_scale_pspec, qdtype, False,  # pytype: disable=wrong-arg-types  # numpy-scalars
                              list(param.shape)),
               init_training_metrics_pspec(
                   generate_training_metrics,
@@ -1621,11 +1621,11 @@ def distributed_shampoo(
               sizes))
 
     local_stats = jax.tree_unflatten(treedef, local_stats_flat)
-    global_stats = GlobalShardedParameterStats(partition_spec_for_statistics,
+    global_stats = GlobalShardedParameterStats(partition_spec_for_statistics,  # pytype: disable=wrong-arg-types  # numpy-scalars
                                                partition_spec_for_statistics,
                                                jax.sharding.PartitionSpec())
     count_pspec = jax.sharding.PartitionSpec()
-    return ShampooState(
+    return ShampooState(  # pytype: disable=wrong-arg-types  # numpy-scalars
         count=count_pspec, stats=ShardedShampooStats(global_stats, local_stats))
 
   def sharded_init_shape_and_dtype_fn(params):
@@ -1666,11 +1666,11 @@ def distributed_shampoo(
       diagonal_statistics_shape_and_dtype = [list(param.shape), param.dtype]
       local_stats_flat.append(
           LocalShardedParameterStats(
-              QuantizedValue(diagonal_statistics_shape_and_dtype, [], [],
+              QuantizedValue(diagonal_statistics_shape_and_dtype, [], [],  # pytype: disable=wrong-arg-types  # numpy-scalars
                              jnp.float32, False, list(param.shape)),
-              QuantizedValue(m1_shape_and_dtype, [], m1_scale_shape_and_dtype,
+              QuantizedValue(m1_shape_and_dtype, [], m1_scale_shape_and_dtype,  # pytype: disable=wrong-arg-types  # numpy-scalars
                              qdtype, False, list(param.shape)),
-              QuantizedValue(m2_shape_and_dtype, [], m2_scale_shape_and_dtype,
+              QuantizedValue(m2_shape_and_dtype, [], m2_scale_shape_and_dtype,  # pytype: disable=wrong-arg-types  # numpy-scalars
                              qdtype, False, list(param.shape)),
               init_training_metrics_shapes(
                   len(sizes),
@@ -1694,10 +1694,10 @@ def distributed_shampoo(
         num_statistics, max_statistics_size,
         precond_dim(max_statistics_size)
     ]
-    global_stats = GlobalShardedParameterStats(
+    global_stats = GlobalShardedParameterStats(  # pytype: disable=wrong-arg-types  # numpy-scalars
         [statistics_shape, jnp.float32], [preconditioners_shape, jnp.float32],
         [[num_statistics], jnp.int32])
-    return ShampooState(
+    return ShampooState(  # pytype: disable=wrong-arg-types  # numpy-scalars
         count=[[], jnp.float32],
         stats=ShardedShampooStats(global_stats, local_stats))
 
@@ -2690,7 +2690,8 @@ def distributed_shampoo(
     shampoo_update_with_wd = shampoo_update
     grafting_update_with_wd = grafting_update
 
-    if weight_decay != 0 and not decoupled_weight_decay:
+    if (weight_decay != 0 and weight_decay is not None and
+        not decoupled_weight_decay):
       shampoo_update_with_wd = shampoo_update + weight_decay * param
       grafting_update_with_wd = grafting_update + weight_decay * param
 
@@ -2719,7 +2720,8 @@ def distributed_shampoo(
     if nesterov:
       nesterov_momentum_update = w * wd_update + beta1 * momentum_update
 
-    if weight_decay != 0 and decoupled_weight_decay:
+    if (weight_decay != 0 and weight_decay is not None and
+        decoupled_weight_decay):
       nesterov_momentum_update = (
           nesterov_momentum_update + lr * weight_decay * param)
 

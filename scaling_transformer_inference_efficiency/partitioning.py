@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2022 The Google Research Authors.
+# Copyright 2023 The Google Research Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,10 +24,11 @@ import threading
 from typing import Any, List, Optional, Sequence, Tuple, Union, cast
 
 import jax
+from jax import core
 from jax import pxla
 from jax.experimental import mesh_utils
 from jax.experimental import pjit
-from jax.experimental.gda_serialization import serialization as jax_gda_serialization
+from jax.experimental.array_serialization import serialization as jax_array_serialization
 import jax.numpy as jnp
 from jax.sharding import Mesh
 from jax.sharding import NamedSharding
@@ -97,6 +98,8 @@ def make_rules_two_d(attn_batch_sharding=AttnAllToAll.NONE,
       ('embedding_embed', 'x'),
       ('vocab', ('y', 'z', 'x') if batch_unsharded else ('y', 'z')),
       ('attn_batch', attn_sharding_to_axes(attn_batch_sharding)),
+      ('weight_load_embed', ('x', 'y', 'z')),
+      ('weight_load_heads', None),
   ]
 
 
@@ -121,6 +124,8 @@ def make_rules_one_d():
       ('vocab', ('y', 'z', 'x')),
       ('embedding_embed', 'x'),
       ('attn_batch', None),
+      ('weight_load_embed', ('x', 'y', 'z')),
+      ('weight_load_heads', None),
   ]
 
 
@@ -145,6 +150,8 @@ def make_rules_weight_gathered():
       ('vocab', ('y', 'z')),
       ('embedding_embed', 'x'),
       ('attn_batch', ('x', 'y', 'z')),
+      ('weight_load_embed', ('x', 'y', 'z')),
+      ('weight_load_heads', None),
   ]
 
 
@@ -256,7 +263,7 @@ def copy_to_device(x, sharding,
   """Copies the input to the device, however is appropriate for the input.
 
   If it's an np.ndarray, copies from host memory to device memory. If it's a
-  jax.ShapedArray, creates a jnp.zeros() of the appropriate shape in device
+  core.ShapedArray, creates a jnp.zeros() of the appropriate shape in device
   memory. If it's a tensorstore.Spec, fetches the data from tensorstore to
   device memory using JAX or Pathways, as appropriate for the current JAX
   backend.
@@ -285,7 +292,7 @@ def copy_to_device(x, sharding,
       return jax.lax.convert_element_type(x[i], expected.dtype)
 
     return jax.make_array_from_callback(x.shape, sharding, cb)
-  elif isinstance(x, jax.ShapedArray):
+  elif isinstance(x, core.ShapedArray):
 
     def sharded_zeros():
       return jnp.zeros(x.shape, expected.dtype)
@@ -302,7 +309,7 @@ def copy_to_device(x, sharding,
       # Further code is internal
     else:
       # Read from tensorstore using jax gda_serialization
-      (tensor,) = jax_gda_serialization.run_deserialization(
+      (tensor,) = jax_array_serialization.run_deserialization(
           [sharding], [x], [expected.shape], [expected.dtype], concurrent_gb=64
       )
       return tensor
@@ -363,7 +370,7 @@ def safe_sharding(tensor, sharding, mesh):
   if sharding == P(
       None,
   ):
-    return sharding
+    return P()
   if sharding == P(None):
     return sharding
   if sharding == P():
