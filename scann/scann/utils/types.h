@@ -39,10 +39,12 @@ using DatapointIndex = uint64_t;
 using DatapointIndex = uint32_t;
 #endif
 enum : DatapointIndex {
+
   kInvalidDatapointIndex = std::numeric_limits<DatapointIndex>::max(),
 };
 
 enum : size_t {
+
   kMaxNumDatapoints = (kInvalidDatapointIndex >> 1) + 1
 };
 
@@ -460,6 +462,10 @@ constexpr T MaxOrInfinity() {
     return numeric_limits<T>::max();
   }
 }
+
+static constexpr int kNumDatapointsPerBlock = 32;
+static constexpr int kPackedDataSetBlockSizeBits = 4;
+static constexpr int kPackedDatasetBlockSize = 1 << 4;
 
 }  // namespace research_scann
 

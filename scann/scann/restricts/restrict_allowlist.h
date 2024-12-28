@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <stack>
 #include <utility>
@@ -33,10 +34,11 @@
 #include "absl/log/check.h"
 #include "gtest/gtest_prod.h"
 #include "scann/oss_wrappers/scann_bits.h"
+#include "scann/oss_wrappers/scann_status.h"
 #include "scann/utils/bit_iterator.h"
+#include "scann/utils/bits.h"
 #include "scann/utils/common.h"
 #include "scann/utils/types.h"
-#include "tensorflow/core/lib/core/errors.h"
 
 namespace research_scann {
 

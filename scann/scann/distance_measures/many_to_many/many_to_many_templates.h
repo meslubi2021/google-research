@@ -15,7 +15,7 @@
 #ifndef SCANN_DISTANCE_MEASURES_MANY_TO_MANY_MANY_TO_MANY_TEMPLATES_H_
 #define SCANN_DISTANCE_MEASURES_MANY_TO_MANY_MANY_TO_MANY_TEMPLATES_H_
 
-#include <cstdint>
+#include <cstddef>
 
 #include "scann/data_format/dataset.h"
 #include "scann/distance_measures/distance_measure_base.h"
@@ -24,84 +24,53 @@
 #include "scann/distance_measures/one_to_many/one_to_many.h"
 #include "scann/distance_measures/one_to_one/dot_product.h"
 #include "scann/utils/intrinsics/fma.h"
+#include "scann/utils/intrinsics/highway.h"
 #include "scann/utils/intrinsics/horizontal_sum.h"
 #include "scann/utils/intrinsics/simd.h"
 #include "scann/utils/types.h"
 
-#define SCANN_CALL_FUNCTION_BY_MM_BATCH_SIZE_5(batch_size, function, ...) \
-  switch (batch_size) {                                                   \
-    case 0:                                                               \
-      break;                                                              \
-    case 1:                                                               \
-      function<1>(__VA_ARGS__);                                           \
-      break;                                                              \
-    case 2:                                                               \
-      function<2>(__VA_ARGS__);                                           \
-      break;                                                              \
-    case 3:                                                               \
-      function<3>(__VA_ARGS__);                                           \
-      break;                                                              \
-    case 4:                                                               \
-      function<4>(__VA_ARGS__);                                           \
-      break;                                                              \
-    case 5:                                                               \
-      function<5>(__VA_ARGS__);                                           \
-      break;                                                              \
-    default:                                                              \
-      DLOG(FATAL) << "Invalid Batch Size";                                \
-  }
-#define SCANN_CALL_FUNCTION_BY_MM_BATCH_SIZE_6(batch_size, function, ...) \
-  switch (batch_size) {                                                   \
-    case 0:                                                               \
-      break;                                                              \
-    case 1:                                                               \
-      function<1>(__VA_ARGS__);                                           \
-      break;                                                              \
-    case 2:                                                               \
-      function<2>(__VA_ARGS__);                                           \
-      break;                                                              \
-    case 3:                                                               \
-      function<3>(__VA_ARGS__);                                           \
-      break;                                                              \
-    case 4:                                                               \
-      function<4>(__VA_ARGS__);                                           \
-      break;                                                              \
-    case 5:                                                               \
-      function<5>(__VA_ARGS__);                                           \
-      break;                                                              \
-    case 6:                                                               \
-      function<6>(__VA_ARGS__);                                           \
-      break;                                                              \
-    default:                                                              \
-      DLOG(FATAL) << "Invalid Batch Size";                                \
-  }
+#define SCANN_MM_BATCH_SIZE_CASE(kMaxBatchSize, kBatchSize, function, ...) \
+  case kBatchSize:                                                         \
+    if constexpr (kBatchSize <= kMaxBatchSize) {                           \
+      function<kBatchSize>(__VA_ARGS__);                                   \
+      break;                                                               \
+    } else {                                                               \
+      ABSL_FALLTHROUGH_INTENDED;                                           \
+    }
 
-#define SCANN_CALL_FUNCTION_BY_MM_BATCH_SIZE_3(batch_size, function, ...) \
+#define SCANN_CALL_FUNCTION_BY_MM_BATCH_SIZE(kMaxBatchSize, batch_size,   \
+                                             function, ...)               \
+  static_assert(kMaxBatchSize <= 20, "Max batch size must be <= 20");     \
   switch (batch_size) {                                                   \
     case 0:                                                               \
       break;                                                              \
-    case 1:                                                               \
-      function<1>(__VA_ARGS__);                                           \
-      break;                                                              \
-    case 2:                                                               \
-      function<2>(__VA_ARGS__);                                           \
-      break;                                                              \
-    case 3:                                                               \
-      function<3>(__VA_ARGS__);                                           \
-      break;                                                              \
+      SCANN_MM_BATCH_SIZE_CASE(kMaxBatchSize, 1, function, __VA_ARGS__);  \
+      SCANN_MM_BATCH_SIZE_CASE(kMaxBatchSize, 2, function, __VA_ARGS__);  \
+      SCANN_MM_BATCH_SIZE_CASE(kMaxBatchSize, 3, function, __VA_ARGS__);  \
+      SCANN_MM_BATCH_SIZE_CASE(kMaxBatchSize, 4, function, __VA_ARGS__);  \
+      SCANN_MM_BATCH_SIZE_CASE(kMaxBatchSize, 5, function, __VA_ARGS__);  \
+      SCANN_MM_BATCH_SIZE_CASE(kMaxBatchSize, 6, function, __VA_ARGS__);  \
+      SCANN_MM_BATCH_SIZE_CASE(kMaxBatchSize, 7, function, __VA_ARGS__);  \
+      SCANN_MM_BATCH_SIZE_CASE(kMaxBatchSize, 8, function, __VA_ARGS__);  \
+      SCANN_MM_BATCH_SIZE_CASE(kMaxBatchSize, 9, function, __VA_ARGS__);  \
+      SCANN_MM_BATCH_SIZE_CASE(kMaxBatchSize, 10, function, __VA_ARGS__); \
+      SCANN_MM_BATCH_SIZE_CASE(kMaxBatchSize, 11, function, __VA_ARGS__); \
+      SCANN_MM_BATCH_SIZE_CASE(kMaxBatchSize, 12, function, __VA_ARGS__); \
+      SCANN_MM_BATCH_SIZE_CASE(kMaxBatchSize, 13, function, __VA_ARGS__); \
+      SCANN_MM_BATCH_SIZE_CASE(kMaxBatchSize, 14, function, __VA_ARGS__); \
+      SCANN_MM_BATCH_SIZE_CASE(kMaxBatchSize, 15, function, __VA_ARGS__); \
+      SCANN_MM_BATCH_SIZE_CASE(kMaxBatchSize, 16, function, __VA_ARGS__); \
+      SCANN_MM_BATCH_SIZE_CASE(kMaxBatchSize, 17, function, __VA_ARGS__); \
+      SCANN_MM_BATCH_SIZE_CASE(kMaxBatchSize, 18, function, __VA_ARGS__); \
+      SCANN_MM_BATCH_SIZE_CASE(kMaxBatchSize, 19, function, __VA_ARGS__); \
+      SCANN_MM_BATCH_SIZE_CASE(kMaxBatchSize, 20, function, __VA_ARGS__); \
     default:                                                              \
-      DLOG(FATAL) << "Invalid Batch Size";                                \
+      DLOG(FATAL) << "Invalid Batch Size:  " << batch_size;               \
   }
 
 namespace research_scann {
 
 #ifdef __x86_64__
-
-namespace sse4 {
-#define SCANN_SIMD_ATTRIBUTE SCANN_SSE4
-#include "scann/distance_measures/many_to_many/many_to_many_impl.inc"
-#undef SCANN_SIMD_ATTRIBUTE
-}  // namespace sse4
 
 namespace avx1 {
 #define SCANN_SIMD_ATTRIBUTE SCANN_AVX1
@@ -121,15 +90,13 @@ namespace avx512 {
 #undef SCANN_SIMD_ATTRIBUTE
 }  // namespace avx512
 
-#else
+#endif
 
-namespace fallback {
+namespace highway {
 #define SCANN_SIMD_ATTRIBUTE
 #include "scann/distance_measures/many_to_many/many_to_many_impl.inc"
 #undef SCANN_SIMD_ATTRIBUTE
-}  // namespace fallback
-
-#endif
+}  // namespace highway
 
 namespace mm_internal {
 
@@ -182,17 +149,11 @@ SCANN_INLINE void DenseDistanceManyToManyImpl2(
   } else if (RuntimeSupportsAvx1()) {
     return avx1::DenseDistanceManyToManyImpl(dist, queries, database, pool,
                                              std::move(callback));
-  } else if (RuntimeSupportsSse4()) {
-    return sse4::DenseDistanceManyToManyImpl(dist, queries, database, pool,
-                                             std::move(callback));
-  } else {
-    LOG(FATAL) << "Pre-SSE4 hardware is not supported on x64.";
   }
 
-#else
-  return fallback::DenseDistanceManyToManyImpl(dist, queries, database, pool,
-                                               std::move(callback));
 #endif
+  return highway::DenseDistanceManyToManyImpl(dist, queries, database, pool,
+                                              std::move(callback));
 }
 
 template <typename DatabaseT, typename CallbackT>
@@ -213,19 +174,13 @@ void DenseManyToManyOrthogonalityAmplifiedImpl(
     return avx1::DenseManyToManyOrthogonalityAmplifiedImpl(
         queries, normalized_residuals, lambda, database, pool,
         std::move(callback));
-  } else if (RuntimeSupportsSse4()) {
-    return sse4::DenseManyToManyOrthogonalityAmplifiedImpl(
-        queries, normalized_residuals, lambda, database, pool,
-        std::move(callback));
-  } else {
-    LOG(FATAL) << "Pre-SSE4 hardware is not supported on x64.";
   }
 
-#else
-  return fallback::DenseManyToManyOrthogonalityAmplifiedImpl(
+#endif
+
+  return highway::DenseManyToManyOrthogonalityAmplifiedImpl(
       queries, normalized_residuals, lambda, database, pool,
       std::move(callback));
-#endif
 }
 
 template <typename CallbackT>
@@ -247,17 +202,12 @@ SCANN_INLINE void DenseDistanceManyToManyFP8PretransposedImpl2(
   } else if (RuntimeSupportsAvx1()) {
     return avx1::DenseManyToManyFP8PretransposedImpl(dist, queries, database,
                                                      pool, std::move(callback));
-  } else if (RuntimeSupportsSse4()) {
-    return sse4::DenseManyToManyFP8PretransposedImpl(dist, queries, database,
-                                                     pool, std::move(callback));
-  } else {
-    LOG(FATAL) << "Pre-SSE4 hardware is not supported on x64.";
   }
 
-#else
-  return fallback::DenseManyToManyFP8PretransposedImpl(
-      dist, queries, database, pool, std::move(callback));
 #endif
+
+  return highway::DenseManyToManyFP8PretransposedImpl(
+      dist, queries, database, pool, std::move(callback));
 }
 
 template <typename FloatT, typename CallbackT>
@@ -325,9 +275,8 @@ Status DenseDistanceManyToManyFP8PretransposedImpl(
   return OkStatus();
 }
 
-#undef SCANN_CALL_FUNCTION_BY_MM_BATCH_SIZE_3
-#undef SCANN_CALL_FUNCTION_BY_MM_BATCH_SIZE_5
-#undef SCANN_CALL_FUNCTION_BY_MM_BATCH_SIZE_6
+#undef SCANN_MM_BATCH_SIZE_CASE
+#undef SCANN_CALL_FUNCTION_BY_MM_BATCH_SIZE
 
 }  // namespace mm_internal
 }  // namespace research_scann

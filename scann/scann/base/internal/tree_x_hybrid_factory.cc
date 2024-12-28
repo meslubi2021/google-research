@@ -16,15 +16,17 @@
 
 #include <cmath>
 #include <functional>
+#include <memory>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
-#include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
 #include "scann/base/internal/single_machine_factory_impl.h"
 #include "scann/base/single_machine_base.h"
 #include "scann/base/single_machine_factory_options.h"
 #include "scann/brute_force/scalar_quantized_brute_force.h"
+#include "scann/data_format/datapoint.h"
 #include "scann/distance_measures/distance_measure_base.h"
 #include "scann/distance_measures/distance_measure_factory.h"
 #include "scann/hashes/asymmetric_hashing2/searcher.h"
@@ -33,12 +35,15 @@
 #include "scann/hashes/asymmetric_hashing2/training_options.h"
 #include "scann/oss_wrappers/scann_down_cast.h"
 #include "scann/oss_wrappers/scann_status.h"
+#include "scann/oss_wrappers/scann_threadpool.h"
 #include "scann/partitioning/kmeans_tree_like_partitioner.h"
 #include "scann/partitioning/kmeans_tree_partitioner.h"
 #include "scann/partitioning/partitioner_base.h"
 #include "scann/partitioning/partitioner_factory.h"
+#include "scann/partitioning/projecting_decorator.h"
 #include "scann/partitioning/tree_brute_force_second_level_wrapper.h"
 #include "scann/proto/brute_force.pb.h"
+#include "scann/proto/centers.pb.h"
 #include "scann/proto/exact_reordering.pb.h"
 #include "scann/proto/partitioning.pb.h"
 #include "scann/tree_x_hybrid/tree_ah_hybrid_residual.h"
@@ -49,7 +54,6 @@
 #include "scann/utils/hash_leaf_helpers.h"
 #include "scann/utils/scalar_quantization_helpers.h"
 #include "scann/utils/types.h"
-#include "tensorflow/core/lib/core/errors.h"
 
 namespace research_scann {
 
@@ -68,6 +72,46 @@ struct CreateTreeXPartitionerResult {
   vector<std::vector<DatapointIndex>> datapoints_by_token;
 };
 
+namespace {
+template <typename T>
+StatusOr<vector<std::vector<DatapointIndex>>> TokenizeDatabaseWithAvq(
+    const PartitioningConfig& pconfig, const TypedDataset<T>& dataset,
+    Partitioner<T>* partitioner, ThreadPool* parallelization_pool) {
+  {
+    auto kmeans_tree_partitioner =
+        dynamic_cast<KMeansTreePartitioner<T>*>(partitioner);
+    if (kmeans_tree_partitioner) {
+      return kmeans_tree_partitioner->TokenizeDatabase(
+          dataset, parallelization_pool,
+          {.avq_after_primary = true, .avq_eta = pconfig.avq()});
+    }
+  }
+  auto projecting_partitioner =
+      dynamic_cast<KMeansTreeProjectingDecorator<T>*>(partitioner);
+  if (!projecting_partitioner) {
+    return UnimplementedError(
+        "AVQ is only defined for KMeans tree partitioners.");
+  }
+  auto kmeans_tree_partitioner = dynamic_cast<KMeansTreePartitioner<float>*>(
+      projecting_partitioner->base_partitioner());
+  if (!kmeans_tree_partitioner) {
+    return UnimplementedError(
+        "AVQ is only defined for KMeans tree partitioners.");
+  }
+
+  auto projection = projecting_partitioner->projection();
+  DenseDataset<float> projected_dataset;
+  Datapoint<float> projected_dp;
+  for (const auto& dptr : dataset) {
+    SCANN_RETURN_IF_ERROR(projection->ProjectInput(dptr, &projected_dp));
+    projected_dataset.AppendOrDie(projected_dp.ToGfv(), "");
+  }
+  return kmeans_tree_partitioner->TokenizeDatabase(
+      projected_dataset, parallelization_pool,
+      {.avq_after_primary = true, .avq_eta = pconfig.avq()});
+}
+}  // namespace
+
 template <typename T>
 StatusOr<CreateTreeXPartitionerResult<T>> CreateTreeXPartitioner(
     shared_ptr<const TypedDataset<T>> dataset, const ScannConfig& config,
@@ -84,7 +128,7 @@ StatusOr<CreateTreeXPartitionerResult<T>> CreateTreeXPartitioner(
     return InvalidArgumentError(
         "pre-trained kmeans-tree partitioners are not supported.");
   } else if (opts->serialized_partitioner) {
-    TF_ASSIGN_OR_RETURN(
+    SCANN_ASSIGN_OR_RETURN(
         partitioner,
         PartitionerFromSerialized<T>(*opts->serialized_partitioner, pconfig));
   } else if (!pconfig.has_partitioner_prefix() ||
@@ -98,9 +142,9 @@ StatusOr<CreateTreeXPartitionerResult<T>> CreateTreeXPartitioner(
           "Cannot use a pretokenized dataset without a precomputed "
           "partitioner.");
     }
-    TF_ASSIGN_OR_RETURN(partitioner,
-                        PartitionerFactory<T>(dataset.get(), pconfig,
-                                              opts->parallelization_pool));
+    SCANN_ASSIGN_OR_RETURN(partitioner,
+                           PartitionerFactory<T>(dataset.get(), pconfig,
+                                                 opts->parallelization_pool));
     should_apply_avq = !std::isnan(pconfig.avq());
   } else {
     return InvalidArgumentError("Loading a partitioner is not supported.");
@@ -112,24 +156,16 @@ StatusOr<CreateTreeXPartitionerResult<T>> CreateTreeXPartitioner(
 
   vector<std::vector<DatapointIndex>> token_to_datapoint_index;
   if (should_apply_avq) {
-    auto kmeans_tree_partitioner =
-        dynamic_cast<KMeansTreePartitioner<T>*>(partitioner.get());
-    if (!kmeans_tree_partitioner) {
-      return UnimplementedError(
-          "AVQ is only defined for KMeans tree partitioners and is not "
-          "currently supported when projection is enabled.");
-    }
-    TF_ASSIGN_OR_RETURN(
+    SCANN_ASSIGN_OR_RETURN(
         token_to_datapoint_index,
-        kmeans_tree_partitioner->TokenizeDatabase(
-            *dataset, opts->parallelization_pool.get(),
-            {.avq_after_primary = true, .avq_eta = pconfig.avq()}));
+        TokenizeDatabaseWithAvq(pconfig, *dataset, partitioner.get(),
+                                opts->parallelization_pool.get()));
   } else if (opts->datapoints_by_token) {
     token_to_datapoint_index = std::move(*opts->datapoints_by_token);
   } else {
-    TF_ASSIGN_OR_RETURN(token_to_datapoint_index,
-                        partitioner->TokenizeDatabase(
-                            *dataset, opts->parallelization_pool.get()));
+    SCANN_ASSIGN_OR_RETURN(token_to_datapoint_index,
+                           partitioner->TokenizeDatabase(
+                               *dataset, opts->parallelization_pool.get()));
   }
   return CreateTreeXPartitionerResult<T>{std::move(partitioner),
                                          std::move(token_to_datapoint_index)};
@@ -156,10 +192,7 @@ Status SetOverretrievalFactor(const PartitioningConfig& pconfig,
 template <typename T, template <typename> typename Partitioner>
 Status MaybeAddTopLevelPartitioner(unique_ptr<Partitioner<T>>& partitioner,
                                    const ScannConfig& config) {
-  const char* const top_partitioner_prefix =
-      "experimental_top_level_partitioner:";
-  if (!absl::StartsWith(config.custom_search_method(),
-                        top_partitioner_prefix)) {
+  if (!config.partitioning().bottom_up_top_level_partitioner().enabled()) {
     return OkStatus();
   }
   if (!dynamic_cast<KMeansTreeLikePartitioner<T>*>(partitioner.get())) {
@@ -167,49 +200,54 @@ Status MaybeAddTopLevelPartitioner(unique_ptr<Partitioner<T>>& partitioner,
         "Top-level partitioner is only supported if the base partitioner "
         "KMeansTreeLikePartitioner.");
   }
-  unique_ptr<KMeansTreeLikePartitioner<T>> kmeans_tree_partitioner(
-      static_cast<KMeansTreeLikePartitioner<T>*>(partitioner.release()));
-  string_view top_partitioner_params =
-      absl::StripPrefix(config.custom_search_method(), top_partitioner_prefix);
-  vector<string> split = absl::StrSplit(top_partitioner_params, ',');
-  SCANN_RET_CHECK(split.size() == 4 || split.size() == 5) << split.size();
-  int32_t top_level_centroids, top_level_centroids_to_search;
-  SCANN_RET_CHECK(absl::SimpleAtoi(split[0], &top_level_centroids));
-  SCANN_RET_CHECK(absl::SimpleAtoi(split[1], &top_level_centroids_to_search));
-  float avq_eta, orthogonality_amplification_lambda;
-  SCANN_RET_CHECK(absl::SimpleAtof(split[2], &avq_eta));
-  SCANN_RET_CHECK(
-      absl::SimpleAtof(split[3], &orthogonality_amplification_lambda));
-  float overretrieve_factor = 2.0;
-  if (split.size() == 5) {
-    SCANN_RET_CHECK(absl::SimpleAtof(split[4], &overretrieve_factor));
+  const auto projected =
+      dynamic_cast<const KMeansTreeProjectingDecorator<T>*>(partitioner.get());
+  if (projected) {
+    unique_ptr<KMeansTreeLikePartitioner<float>> cloned_base(
+        dynamic_cast<KMeansTreeLikePartitioner<float>*>(
+            projected->base_partitioner()->Clone().release()));
+    SCANN_RET_CHECK(cloned_base);
+    auto top_level_partitioner =
+        make_unique<TreeBruteForceSecondLevelWrapper<float>>(
+            std::move(cloned_base));
+    SCANN_RETURN_IF_ERROR(top_level_partitioner->CreatePartitioning(
+        config.partitioning().bottom_up_top_level_partitioner()));
+    auto wrapped_top = make_unique<KMeansTreeProjectingDecorator<T>>(
+        projected->projection(), std::move(top_level_partitioner));
+    partitioner = std::move(wrapped_top);
+  } else {
+    unique_ptr<KMeansTreeLikePartitioner<T>> kmeans_tree_partitioner(
+        static_cast<KMeansTreeLikePartitioner<T>*>(partitioner.release()));
+    auto top_level_partitioner =
+        make_unique<TreeBruteForceSecondLevelWrapper<T>>(
+            std::move(kmeans_tree_partitioner));
+    SCANN_RETURN_IF_ERROR(top_level_partitioner->CreatePartitioning(
+        config.partitioning().bottom_up_top_level_partitioner()));
+    partitioner = std::move(top_level_partitioner);
   }
-  partitioner = make_unique<TreeBruteForceSecondLevelWrapper<T>>(
-      std::move(kmeans_tree_partitioner), top_level_centroids,
-      top_level_centroids_to_search, avq_eta,
-      orthogonality_amplification_lambda, overretrieve_factor);
   return OkStatus();
 }
 }  // namespace
 
 template <typename T>
 StatusOrSearcherUntyped TreeAhHybridResidualFactory(
-    const ScannConfig& config, const shared_ptr<TypedDataset<T>>& dataset,
+    ScannConfig config, const shared_ptr<TypedDataset<T>>& dataset,
     const GenericSearchParameters& params, SingleMachineFactoryOptions* opts) {
   return InvalidArgumentError(
       "Tree-AH with residual quantization only works with float data.");
 }
 template <>
 StatusOrSearcherUntyped TreeAhHybridResidualFactory<float>(
-    const ScannConfig& config, const shared_ptr<TypedDataset<float>>& dataset,
+    ScannConfig config, const shared_ptr<TypedDataset<float>>& dataset,
     const GenericSearchParameters& params, SingleMachineFactoryOptions* opts) {
   unique_ptr<Partitioner<float>> partitioner;
   vector<std::vector<DatapointIndex>> datapoints_by_token;
   if (config.partitioning().has_partitioner_prefix()) {
     return InvalidArgumentError("Loading a partitioner is not supported.");
   } else {
-    TF_ASSIGN_OR_RETURN(auto create_tree_x_partitioner_results,
-                        CreateTreeXPartitioner<float>(dataset, config, opts));
+    SCANN_ASSIGN_OR_RETURN(
+        auto create_tree_x_partitioner_results,
+        CreateTreeXPartitioner<float>(dataset, config, opts));
     datapoints_by_token =
         std::move(create_tree_x_partitioner_results.datapoints_by_token);
     partitioner = std::move(create_tree_x_partitioner_results.partitioner);
@@ -220,6 +258,30 @@ StatusOrSearcherUntyped TreeAhHybridResidualFactory<float>(
     return InvalidArgumentError(
         "Tree AH with residual quantization only works with KMeans tree as a "
         "partitioner.");
+  }
+
+  {
+    auto& hash_proj_config =
+        *config.mutable_hash()->mutable_asymmetric_hash()->mutable_projection();
+    if (!hash_proj_config.has_input_dim() &&
+        !hash_proj_config.has_num_blocks() &&
+        hash_proj_config.variable_blocks().empty() &&
+        hash_proj_config.projection_type() !=
+            ProjectionConfig::VARIABLE_CHUNK) {
+      hash_proj_config.set_input_dim(kmeans_tree_partitioner->kmeans_tree()
+                                         ->CenterForToken(0)
+                                         .dimensionality());
+      LOG(INFO)
+          << "input_dim and num_blocks were not explicitly specified in "
+             "TreeAhHybridResidualFactory AH config. Setting input_dim to "
+          << hash_proj_config.input_dim()
+          << " to match the dimensionality of the partitioning centroids.";
+
+      if (hash_proj_config.input_dim() <
+          hash_proj_config.num_dims_per_block()) {
+        hash_proj_config.set_num_dims_per_block(hash_proj_config.input_dim());
+      }
+    }
   }
 
   auto dense = std::dynamic_pointer_cast<const DenseDataset<float>>(dataset);
@@ -243,9 +305,9 @@ StatusOrSearcherUntyped TreeAhHybridResidualFactory<float>(
     if (opts->datapoints_by_token) {
       datapoints_by_token = std::move(*opts->datapoints_by_token);
     } else if (dense) {
-      TF_ASSIGN_OR_RETURN(datapoints_by_token,
-                          kmeans_tree_partitioner->TokenizeDatabase(
-                              *dense, opts->parallelization_pool.get()));
+      SCANN_ASSIGN_OR_RETURN(datapoints_by_token,
+                             kmeans_tree_partitioner->TokenizeDatabase(
+                                 *dense, opts->parallelization_pool.get()));
     } else {
       return InvalidArgumentError(
           "For Tree-AH hybrid with residual quantization, either "
@@ -264,10 +326,18 @@ StatusOrSearcherUntyped TreeAhHybridResidualFactory<float>(
     datapoints_by_token.resize(kmeans_tree_partitioner->n_tokens());
   }
 
+  DenseDataset<float> residuals;
+  if (dense) {
+    SCANN_ASSIGN_OR_RETURN(residuals, TreeAHHybridResidual::ComputeResiduals(
+                                          *dense, kmeans_tree_partitioner.get(),
+                                          datapoints_by_token));
+  }
+
   shared_ptr<const asymmetric_hashing2::Model<float>> ah_model;
   if (opts->ah_codebook) {
-    TF_ASSIGN_OR_RETURN(ah_model, asymmetric_hashing2::Model<float>::FromProto(
-                                      *opts->ah_codebook));
+    SCANN_ASSIGN_OR_RETURN(
+        ah_model,
+        asymmetric_hashing2::Model<float>::FromProto(*opts->ah_codebook));
   } else if (config.hash().asymmetric_hash().has_centers_filename()) {
     return InvalidArgumentError("Centers files are not supported.");
   } else if (dense) {
@@ -276,18 +346,14 @@ StatusOrSearcherUntyped TreeAhHybridResidualFactory<float>(
           "If a pre-computed hashed database is specified for tree-AH hybrid "
           "then pre-computed AH centers must be specified too.");
     }
-    TF_ASSIGN_OR_RETURN(
+    SCANN_ASSIGN_OR_RETURN(
         auto quantization_distance,
         GetDistanceMeasure(
             config.hash().asymmetric_hash().quantization_distance()));
-    TF_ASSIGN_OR_RETURN(
-        auto residuals,
-        TreeAHHybridResidual::ComputeResiduals(
-            *dense, kmeans_tree_partitioner.get(), datapoints_by_token));
     asymmetric_hashing2::TrainingOptions<float> training_opts(
         config.hash().asymmetric_hash(), quantization_distance, residuals);
     SCANN_RETURN_IF_ERROR(training_opts.Validate());
-    TF_ASSIGN_OR_RETURN(
+    SCANN_ASSIGN_OR_RETURN(
         ah_model, asymmetric_hashing2::TrainSingleMachine(
                       residuals, training_opts, opts->parallelization_pool));
   } else {
@@ -419,8 +485,8 @@ StatusOrSearcherUntyped PretrainedSQTreeXHybridFactory(
     const GenericSearchParameters& params, SingleMachineFactoryOptions* opts) {
   vector<std::vector<DatapointIndex>> datapoints_by_token;
   unique_ptr<Partitioner<float>> partitioner;
-  TF_ASSIGN_OR_RETURN(auto create_tree_x_partitioner_results,
-                      CreateTreeXPartitioner<float>(nullptr, config, opts));
+  SCANN_ASSIGN_OR_RETURN(auto create_tree_x_partitioner_results,
+                         CreateTreeXPartitioner<float>(nullptr, config, opts));
   datapoints_by_token =
       std::move(create_tree_x_partitioner_results.datapoints_by_token);
   partitioner = std::move(create_tree_x_partitioner_results.partitioner);
@@ -444,8 +510,8 @@ StatusOrSearcherUntyped NonResidualTreeXHybridFactory(
       opts && opts->datapoints_by_token && !opts->datapoints_by_token->empty();
   unique_ptr<Partitioner<T>> partitioner;
   vector<std::vector<DatapointIndex>> datapoints_by_token;
-  TF_ASSIGN_OR_RETURN(auto create_tree_x_partitioner_results,
-                      CreateTreeXPartitioner<T>(dataset, config, opts));
+  SCANN_ASSIGN_OR_RETURN(auto create_tree_x_partitioner_results,
+                         CreateTreeXPartitioner<T>(dataset, config, opts));
   datapoints_by_token =
       std::move(create_tree_x_partitioner_results.datapoints_by_token);
   partitioner = std::move(create_tree_x_partitioner_results.partitioner);
@@ -481,13 +547,14 @@ StatusOrSearcherUntyped NonResidualTreeXHybridFactory(
       fp_assets->squared_l2_norm_by_datapoint = make_shared<vector<float>>();
 
       if (!using_pretokenized_database) {
-        TF_ASSIGN_OR_RETURN(datapoints_by_token,
-                            partitioner->TokenizeDatabase(
-                                *dataset, opts->parallelization_pool.get()));
+        SCANN_ASSIGN_OR_RETURN(datapoints_by_token,
+                               partitioner->TokenizeDatabase(
+                                   *dataset, opts->parallelization_pool.get()));
       }
-      TF_ASSIGN_OR_RETURN(auto result, PretrainedTreeSQFactoryFromAssets(
-                                           config, params, datapoints_by_token,
-                                           std::move(partitioner), fp_assets));
+      SCANN_ASSIGN_OR_RETURN(
+          auto result,
+          PretrainedTreeSQFactoryFromAssets(config, params, datapoints_by_token,
+                                            std::move(partitioner), fp_assets));
 
       result->ReleaseDatasetAndDocids();
       SCANN_RETURN_IF_ERROR(result->set_docids(dense->docids()));
@@ -507,13 +574,13 @@ StatusOrSearcherUntyped NonResidualTreeXHybridFactory(
     internal::TrainedAsymmetricHashingResults<T> training_results;
     if (config.hash().asymmetric_hash().has_centers_filename() ||
         opts->ah_codebook.get()) {
-      TF_ASSIGN_OR_RETURN(
+      SCANN_ASSIGN_OR_RETURN(
           training_results,
           internal::HashLeafHelpers<T>::LoadAsymmetricHashingModel(
               ah_config, params, opts->parallelization_pool,
               opts->ah_codebook.get()));
     } else {
-      TF_ASSIGN_OR_RETURN(
+      SCANN_ASSIGN_OR_RETURN(
           training_results,
           internal::HashLeafHelpers<T>::TrainAsymmetricHashingModel(
               dataset, ah_config, params, opts->parallelization_pool));
@@ -572,7 +639,7 @@ StatusOrSearcherUntyped NonResidualTreeXHybridFactory(
       leaf_opts.hashed_dataset = leaf_hashed_dataset;
       leaf_opts.parallelization_pool =
           token == -1 ? nullptr : parallelization_pool;
-      TF_ASSIGN_OR_RETURN(
+      SCANN_ASSIGN_OR_RETURN(
           auto leaf_searcher,
           leaf_factory(spec_config, leaf_dataset, params, &leaf_opts));
       return {unique_cast_unsafe<SingleMachineSearcherBase<T>>(

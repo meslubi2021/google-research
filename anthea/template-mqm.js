@@ -44,6 +44,11 @@ antheaTemplates['MQM'] = {
   VERSION: 'v1.00-Feb-13-2023',
 
   /**
+   * @const {boolean} Show two translations when set to true.
+   */
+  SIDE_BY_SIDE: false,
+
+  /**
    * @const {boolean} Only rate the target side, i.e., the translated text.
    */
   TARGET_SIDE_ONLY: false,

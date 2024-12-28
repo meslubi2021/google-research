@@ -19,6 +19,7 @@
 #include <atomic>
 #include <cstdint>
 #include <string>
+#include <type_traits>
 #include <utility>
 
 #include "absl/base/optimization.h"
@@ -62,7 +63,8 @@ class FastTopNeighbors {
     CHECK(!mutator_held_);
     sz_ = 0;
     epsilon_.store(epsilon, std::memory_order_relaxed);
-    if (max_results_ == max_results && indices_) {
+    if (max_results_ >= max_results && indices_) {
+      max_results_ = max_results;
       return;
     }
 
@@ -171,7 +173,11 @@ class FastTopNeighbors {
     return MutableSpan<DatapointIndexT>(indices_.get(), sz_);
   }
 
-  pair<MutableSpan<DatapointIndexT>, MutableSpan<DistT>> FinishSorted();
+  pair<MutableSpan<DatapointIndexT>, MutableSpan<DistT>> FinishSorted() {
+    return FinishSorted(max_results_);
+  }
+  pair<MutableSpan<DatapointIndexT>, MutableSpan<DistT>> FinishSorted(
+      size_t max_results);
 
   void FinishUnsorted(std::vector<pair<DatapointIndexT, DistT>>* results) {
     ConstSpan<DatapointIndexT> idxs;
@@ -262,11 +268,11 @@ class FastTopNeighbors<DistT, DatapointIndexT>::Mutator {
   SCANN_INLINE bool PushNoEpsilonCheck(DatapointIndexT dp_idx, DistT distance) {
     DCHECK(!std::isnan(distance));
     if constexpr (std::is_same_v<DatapointIndexT, pair<uint64_t, uint64_t>>) {
-      SCANN_LOG_NOOP(1) << StrFormat("Pushing {%d, %f}", dp_idx.first,
-                                     static_cast<double>(distance));
+      DVLOG(1) << StrFormat("Pushing {%d, %f}", dp_idx.first,
+                            static_cast<double>(distance));
     } else {
-      SCANN_LOG_NOOP(1) << StrFormat("Pushing {%d, %f}", dp_idx,
-                                     static_cast<double>(distance));
+      DVLOG(1) << StrFormat("Pushing {%d, %f}", dp_idx,
+                            static_cast<double>(distance));
     }
     DCHECK_LT(pushes_remaining_negated_, 0);
     indices_end_[pushes_remaining_negated_] = dp_idx;
@@ -333,30 +339,32 @@ void PushBlockToFastTopNeighbors(ConstSpan<DistT> distances, DocidFn docid_fn,
   top_n->AcquireMutator(&mutator);
   DatapointIndex dist_idx = 0;
 
-#ifdef __SSE4_1__
-  if constexpr (std::is_same_v<DistT, float>) {
-    Sse4<float> sse_epsilon = mutator.epsilon();
-    constexpr size_t kNumFloatsPerSimdRegister =
-        Sse4<float>::kElementsPerRegister;
-    const size_t num_sse4_registers =
+#if HWY_HAVE_SCALABLE == 0
+
+  if constexpr (std::is_same_v<DistT, float> &&
+                highway::Simd<float>::kElementsPerRegister >= 2) {
+    using Simd = highway::Simd<float>;
+    Simd simd_epsilon = mutator.epsilon();
+    constexpr size_t kNumFloatsPerSimdRegister = Simd::kElementsPerRegister;
+    const size_t num_simd_registers =
         distances.size() / kNumFloatsPerSimdRegister;
-    for (uint32_t simd_idx : Seq(num_sse4_registers)) {
+    for (uint32_t simd_idx : Seq(num_simd_registers)) {
       const uint32_t i0 = simd_idx * kNumFloatsPerSimdRegister;
-      Sse4<float> simd_dists = Sse4<float>::Load(&distances[i0]);
-      int push_mask = GetComparisonMask(simd_dists <= sse_epsilon);
+      Simd simd_dists = Simd::Load(&distances[i0]);
+      int push_mask = GetComparisonMask(simd_dists <= simd_epsilon);
       while (ABSL_PREDICT_FALSE(push_mask)) {
         const int offset = bits::FindLSBSetNonZero(push_mask);
         push_mask &= (push_mask - 1);
-        if (ABSL_PREDICT_FALSE(
-                mutator.Push(docid_fn(i0 + offset), (*simd_dists)[offset]))) {
+        if (ABSL_PREDICT_FALSE(mutator.Push(docid_fn(i0 + offset),
+                                            simd_dists.ExtractLane(offset)))) {
           mutator.GarbageCollect();
-          sse_epsilon = mutator.epsilon();
+          simd_epsilon = mutator.epsilon();
 
-          push_mask &= GetComparisonMask(simd_dists < sse_epsilon);
+          push_mask &= GetComparisonMask(simd_dists < simd_epsilon);
         }
       }
     }
-    dist_idx = num_sse4_registers * kNumFloatsPerSimdRegister;
+    dist_idx = num_simd_registers * kNumFloatsPerSimdRegister;
   }
 #endif
 

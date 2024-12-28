@@ -17,7 +17,16 @@
 #include <memory>
 #include <utility>
 
+#include "absl/strings/str_cat.h"
+#include "scann/base/single_machine_base.h"
+#include "scann/data_format/datapoint.h"
+#include "scann/hashes/asymmetric_hashing2/indexing.h"
+#include "scann/hashes/asymmetric_hashing2/querying.h"
 #include "scann/hashes/asymmetric_hashing2/searcher.h"
+#include "scann/oss_wrappers/scann_status.h"
+#include "scann/proto/hash.pb.h"
+#include "scann/utils/common.h"
+#include "scann/utils/util_functions.h"
 
 namespace research_scann {
 namespace asymmetric_hashing2 {
@@ -146,8 +155,15 @@ Datapoint<uint8_t> Searcher<T>::Mutator::EnsureDatapointUnpacked(
 }
 
 template <typename T>
+StatusOr<Datapoint<T>> Searcher<T>::Mutator::GetDatapoint(
+    DatapointIndex i) const {
+  return UnimplementedError("GetDatapoint is not implemented.");
+}
+
+template <typename T>
 StatusOr<DatapointIndex> Searcher<T>::Mutator::AddDatapoint(
     const DatapointPtr<T>& dptr, string_view docid, const MutationOptions& mo) {
+  SCANN_RETURN_IF_ERROR(this->ValidateForAdd(dptr, docid, mo));
   Datapoint<uint8_t> hashed;
   PrecomputedMutationArtifacts* ma = mo.precomputed_mutation_artifacts;
   if (ma) {
@@ -162,6 +178,12 @@ StatusOr<DatapointIndex> Searcher<T>::Mutator::AddDatapoint(
     SCANN_RETURN_IF_ERROR(Hash(dptr, dptr, &hashed));
   }
   hashed = EnsureDatapointUnpacked(hashed);
+
+  SCANN_ASSIGN_OR_RETURN(
+      auto result2,
+      this->AddDatapointToBase(dptr, docid,
+                               MutateBaseOptions{.hashed = hashed.ToPtr()}));
+
   DatapointIndex result = kInvalidDatapointIndex;
   if (packed_dataset_) {
     result = packed_dataset_->num_datapoints++;
@@ -178,10 +200,6 @@ StatusOr<DatapointIndex> Searcher<T>::Mutator::AddDatapoint(
     SCANN_RETURN_IF_ERROR(
         SetLUT16Hash(hashed.ToPtr(), result, packed_dataset_));
   }
-  TF_ASSIGN_OR_RETURN(
-      auto result2,
-      this->AddDatapointToBase(dptr, docid,
-                               MutateBaseOptions{.hashed = hashed.ToPtr()}));
   if (result == kInvalidDatapointIndex) {
     result = result2;
   } else if (result2 != kInvalidDatapointIndex) {
@@ -193,6 +211,7 @@ StatusOr<DatapointIndex> Searcher<T>::Mutator::AddDatapoint(
 
 template <typename T>
 Status Searcher<T>::Mutator::RemoveDatapoint(DatapointIndex index) {
+  SCANN_RETURN_IF_ERROR(this->ValidateForRemove(index));
   bool on_datapoint_index_rename_called = false;
   auto call_on_datapont_index_rename = [&](DatapointIndex old_idx,
                                            DatapointIndex new_idx) {
@@ -213,8 +232,8 @@ Status Searcher<T>::Mutator::RemoveDatapoint(DatapointIndex index) {
     }
     call_on_datapont_index_rename(new_size, index);
   }
-  TF_ASSIGN_OR_RETURN(const DatapointIndex swapped_in,
-                      this->RemoveDatapointFromBase(index));
+  SCANN_ASSIGN_OR_RETURN(const DatapointIndex swapped_in,
+                         this->RemoveDatapointFromBase(index));
   call_on_datapont_index_rename(swapped_in, index);
   SCANN_RET_CHECK(on_datapoint_index_rename_called);
   return OkStatus();
@@ -243,6 +262,8 @@ template <typename T>
 StatusOr<DatapointIndex> Searcher<T>::Mutator::UpdateDatapoint(
     const DatapointPtr<T>& dptr, DatapointIndex index,
     const MutationOptions& mo) {
+  SCANN_RETURN_IF_ERROR(this->ValidateForUpdate(dptr, index, mo));
+
   Datapoint<uint8_t> hashed;
   const bool mutate_values_vector = true;
   if (mutate_values_vector) {

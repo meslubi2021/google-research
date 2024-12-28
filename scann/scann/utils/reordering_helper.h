@@ -25,16 +25,17 @@
 
 #include "absl/log/log.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "scann/base/single_machine_factory_options.h"
 #include "scann/data_format/datapoint.h"
 #include "scann/data_format/dataset.h"
 #include "scann/distance_measures/distance_measures.h"
+#include "scann/oss_wrappers/scann_status.h"
 #include "scann/utils/common.h"
 #include "scann/utils/fixed_point/pre_quantized_fixed_point.h"
 #include "scann/utils/reordering_helper_interface.h"
 #include "scann/utils/types.h"
 #include "scann/utils/util_functions.h"
-#include "tensorflow/core/lib/core/errors.h"
 
 namespace research_scann {
 
@@ -91,7 +92,7 @@ class FixedPointFloatDenseDotProductReorderingHelper
 
   explicit FixedPointFloatDenseDotProductReorderingHelper(
       shared_ptr<DenseDataset<int8_t>> fixed_point_dataset,
-      const std::vector<float>& multiplier_by_dimension,
+      absl::Span<const float> multiplier_by_dimension,
       float noise_shaping_threshold = NAN);
 
   ~FixedPointFloatDenseDotProductReorderingHelper() override;
@@ -153,7 +154,7 @@ class FixedPointFloatDenseCosineReorderingHelper
 
   explicit FixedPointFloatDenseCosineReorderingHelper(
       shared_ptr<DenseDataset<int8_t>> fixed_point_dataset,
-      const std::vector<float>& multiplier_by_dimension,
+      absl::Span<const float> multiplier_by_dimension,
       float noise_shaping_threshold = NAN);
 
   ~FixedPointFloatDenseCosineReorderingHelper() override;

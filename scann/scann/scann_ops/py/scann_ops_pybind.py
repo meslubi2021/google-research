@@ -15,14 +15,13 @@
 
 """Wrapper around pybind module that provides convenience functions for instantiating ScaNN searchers."""
 
-# pylint: disable=g-import-not-at-top,g-bad-import-order,unused-import
-import pickle as pkl
 import os
+import pickle as pkl
+import numpy as np
+# needed because of C++ dependency on TF headers
+import tensorflow as _tf
 import sys
 
-# needed because of C++ dependency on TF headers
-import numpy as np
-import tensorflow as _tf
 sys.path.append(
     os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -109,8 +108,8 @@ class ScannSearcher(object):
         if self.docids is None else [[self.docids[j] for j in i] for i in idx])
     return idx, dist
 
-  def serialize(self, artifacts_dir):
-    self.searcher.serialize(artifacts_dir)
+  def serialize(self, artifacts_dir, relative_path=False):
+    self.searcher.serialize(artifacts_dir, relative_path)
     docids_fn = os.path.join(artifacts_dir, "scann_docids.pkl")
 
     if self.docids is not None:

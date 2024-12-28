@@ -52,14 +52,11 @@ T ValueOrRuntimeError(StatusOr<T> status_or, const char* prefix) {
 
 ScannNumpy::ScannNumpy(const std::string& artifacts_dir,
                        const std::string& scann_assets_pbtxt) {
-  ScannConfig config;
-  RuntimeErrorIfNotOk(
-      "Failed reading scann_config.pb: ",
-      ReadProtobufFromFile(artifacts_dir + "/scann_config.pb", &config));
-  std::string config_text;
-  google::protobuf::TextFormat::PrintToString(config, &config_text);
+  auto status_or =
+      ScannInterface::LoadArtifacts(artifacts_dir, scann_assets_pbtxt);
+  RuntimeErrorIfNotOk("Error loading artifacts: ", status_or.status());
   RuntimeErrorIfNotOk("Error initializing searcher: ",
-                      scann_.Initialize(config_text, scann_assets_pbtxt));
+                      scann_.Initialize(status_or.value()));
 }
 
 ScannNumpy::ScannNumpy(const np_row_major_arr<float>& np_dataset,
@@ -197,8 +194,11 @@ ScannNumpy::Search(const np_row_major_arr<float>& query, int final_nn,
 
   DatapointPtr<float> ptr(nullptr, query.data(), query.size(), query.size());
   NNResultsVector res;
-  auto status = scann_.Search(ptr, &res, final_nn, pre_reorder_nn, leaves);
-  RuntimeErrorIfNotOk("Error during search: ", status);
+  {
+    pybind11::gil_scoped_release gil_release;
+    auto status = scann_.Search(ptr, &res, final_nn, pre_reorder_nn, leaves);
+    RuntimeErrorIfNotOk("Error during search: ", status);
+  }
 
   pybind11::array_t<DatapointIndex> indices(res.size());
   pybind11::array_t<float> distances(res.size());
@@ -216,18 +216,22 @@ ScannNumpy::SearchBatched(const np_row_major_arr<float>& queries, int final_nn,
     throw std::invalid_argument("Queries must be in two-dimensional array");
 
   vector<float> queries_vec(queries.data(), queries.data() + queries.size());
-  auto query_dataset = DenseDataset<float>(queries_vec, queries.shape()[0]);
+  auto query_dataset =
+      DenseDataset<float>(std::move(queries_vec), queries.shape()[0]);
 
   std::vector<NNResultsVector> res(query_dataset.size());
-  Status status;
-  if (parallel)
-    status = scann_.SearchBatchedParallel(query_dataset, MakeMutableSpan(res),
-                                          final_nn, pre_reorder_nn, leaves,
-                                          batch_size);
-  else
-    status = scann_.SearchBatched(query_dataset, MakeMutableSpan(res), final_nn,
-                                  pre_reorder_nn, leaves);
-  RuntimeErrorIfNotOk("Error during search: ", status);
+  {
+    pybind11::gil_scoped_release gil_release;
+    Status status;
+    if (parallel)
+      status = scann_.SearchBatchedParallel(query_dataset, MakeMutableSpan(res),
+                                            final_nn, pre_reorder_nn, leaves,
+                                            batch_size);
+    else
+      status = scann_.SearchBatched(query_dataset, MakeMutableSpan(res),
+                                    final_nn, pre_reorder_nn, leaves);
+    RuntimeErrorIfNotOk("Error during search: ", status);
+  }
 
   for (const auto& nn_res : res)
     final_nn = std::max<int>(final_nn, nn_res.size());
@@ -241,8 +245,8 @@ ScannNumpy::SearchBatched(const np_row_major_arr<float>& queries, int final_nn,
   return {indices, distances};
 }
 
-void ScannNumpy::Serialize(std::string path) {
-  StatusOr<ScannAssets> assets_or = scann_.Serialize(path);
+void ScannNumpy::Serialize(std::string path, bool relative_path) {
+  StatusOr<ScannAssets> assets_or = scann_.Serialize(path, relative_path);
   RuntimeErrorIfNotOk("Failed to extract SingleMachineFactoryOptions: ",
                       assets_or.status());
   std::string assets_or_text;

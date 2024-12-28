@@ -27,22 +27,23 @@
 #include <vector>
 
 #include "absl/base/optimization.h"
+#include "absl/base/prefetch.h"
 #include "absl/log/check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/synchronization/mutex.h"
+#include "absl/types/span.h"
 #include "scann/data_format/datapoint.h"
 #include "scann/data_format/dataset.h"
 #include "scann/distance_measures/one_to_many/one_to_many.h"
 #include "scann/distance_measures/one_to_one/l2_distance.h"
 #include "scann/oss_wrappers/scann_down_cast.h"
+#include "scann/oss_wrappers/scann_status.h"
 #include "scann/utils/bfloat16_helpers.h"
 #include "scann/utils/common.h"
 #include "scann/utils/datapoint_utils.h"
 #include "scann/utils/scalar_quantization_helpers.h"
 #include "scann/utils/types.h"
-#include "tensorflow/core/lib/core/errors.h"
-#include "tensorflow/core/platform/prefetch.h"
 
 namespace research_scann {
 namespace one_to_many_low_level {
@@ -117,8 +118,7 @@ class SetSquaredL2DistanceFunctor {
   }
 
   SCANN_INLINE void prefetch(size_t index) {
-    ::tensorflow::port::prefetch<::tensorflow::port::PREFETCH_HINT_T0>(
-        &dp_squared_l2_norms_[index]);
+    absl::PrefetchToLocalCache(&dp_squared_l2_norms_[index]);
   }
 
  private:
@@ -147,8 +147,7 @@ class SetSquaredL2Top1Functor {
   }
 
   SCANN_INLINE void prefetch(size_t index) {
-    ::tensorflow::port::prefetch<::tensorflow::port::PREFETCH_HINT_T0>(
-        &dp_squared_l2_norms_[index]);
+    absl::PrefetchToLocalCache(&dp_squared_l2_norms_[index]);
   }
 
   std::pair<DatapointIndex, float> Top1Pair() {
@@ -192,8 +191,7 @@ class SetLimitedInnerDistanceFunctor {
   }
 
   SCANN_INLINE void prefetch(size_t index) {
-    ::tensorflow::port::prefetch<::tensorflow::port::PREFETCH_HINT_T0>(
-        &inverse_database_l2_norms_[index]);
+    absl::PrefetchToLocalCache(&inverse_database_l2_norms_[index]);
   }
 
  private:
@@ -224,8 +222,7 @@ class SetLimitedInnerTop1Functor {
   }
 
   SCANN_INLINE void prefetch(size_t index) {
-    ::tensorflow::port::prefetch<::tensorflow::port::PREFETCH_HINT_T0>(
-        &inverse_database_l2_norms_[index]);
+    absl::PrefetchToLocalCache(&inverse_database_l2_norms_[index]);
   }
 
   std::pair<DatapointIndex, float> Top1Pair() {
@@ -389,7 +386,7 @@ FixedPointFloatDenseDotProductReorderingHelper::
 FixedPointFloatDenseDotProductReorderingHelper::
     FixedPointFloatDenseDotProductReorderingHelper(
         shared_ptr<DenseDataset<int8_t>> fixed_point_dataset,
-        const std::vector<float>& multiplier_by_dimension,
+        absl::Span<const float> multiplier_by_dimension,
         float noise_shaping_threshold)
     : fixed_point_dataset_(std::move(fixed_point_dataset)),
       noise_shaping_threshold_(noise_shaping_threshold) {
@@ -511,7 +508,7 @@ FixedPointFloatDenseCosineReorderingHelper::
 FixedPointFloatDenseCosineReorderingHelper::
     FixedPointFloatDenseCosineReorderingHelper(
         shared_ptr<DenseDataset<int8_t>> fixed_point_dataset,
-        const vector<float>& multiplier_by_dimension,
+        absl::Span<const float> multiplier_by_dimension,
         float noise_shaping_threshold)
     : dot_product_helper_(std::move(fixed_point_dataset),
                           multiplier_by_dimension, noise_shaping_threshold) {}
